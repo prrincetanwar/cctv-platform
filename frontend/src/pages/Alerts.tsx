@@ -1,0 +1,312 @@
+import { useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  RefreshCw,
+  ShieldAlert,
+} from 'lucide-react';
+import MainLayout from '../layouts/MainLayout';
+import api from '../services/api';
+import type { Alert } from '../services/api';
+import { connectEventSocket } from '../services/websocket';
+
+interface EventMessage {
+  type?: string;
+  detection?: unknown;
+  alert?: Alert;
+}
+
+export default function Alerts() {
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [workingId, setWorkingId] = useState<number | null>(null);
+  const [error, setError] = useState('');
+
+  const loadAlerts = async () => {
+    try {
+      setError('');
+      const response = await api.get<Alert[]>('/api/detections/alerts');
+      setAlerts(response.data);
+    } catch (err) {
+      console.error(err);
+      setError('Unable to load alerts. Please log in again if your session has expired.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAlerts();
+    const socket = connectEventSocket((event: unknown) => {
+      const message = event as EventMessage;
+      if ((message.type === 'DETECTION_CREATED' || message.type === 'ALERT_UPDATED') && message.alert) {
+        setAlerts((current) => {
+          const exists = current.some((alert) => alert.id === message.alert!.id);
+          return exists
+            ? current.map((alert) => alert.id === message.alert!.id ? message.alert! : alert)
+            : [message.alert!, ...current];
+        });
+      }
+    });
+
+    return () => socket?.close();
+  }, []);
+
+  const openAlerts = useMemo(
+    () => alerts.filter((alert) => alert.status === 'OPEN'),
+    [alerts],
+  );
+
+  const acknowledgedAlerts = useMemo(
+    () => alerts.filter((alert) => alert.status === 'ACKNOWLEDGED'),
+    [alerts],
+  );
+
+  const resolvedAlerts = useMemo(
+    () => alerts.filter((alert) => alert.status === 'RESOLVED'),
+    [alerts],
+  );
+
+  const updateAlert = async (
+    alertId: number,
+    action: 'acknowledge' | 'resolve',
+  ) => {
+    try {
+      setWorkingId(alertId);
+      setError('');
+
+      const response = await api.patch<Alert>(
+        `/api/detections/alerts/${alertId}/${action}`,
+      );
+
+      setAlerts((current) =>
+        current.map((alert) =>
+          alert.id === alertId ? response.data : alert,
+        ),
+      );
+    } catch (err) {
+      console.error(err);
+      setError(`Unable to ${action} alert #${alertId}.`);
+    } finally {
+      setWorkingId(null);
+    }
+  };
+
+  const statusClass = (status: string) => {
+    if (status === 'OPEN') return 'alert-status open';
+    if (status === 'ACKNOWLEDGED') return 'alert-status acknowledged';
+    return 'alert-status resolved';
+  };
+
+  const severityClass = (severity: string) => {
+    if (severity === 'HIGH') return 'severity high';
+    if (severity === 'MEDIUM') return 'severity medium';
+    return 'severity';
+  };
+
+  return (
+    <MainLayout>
+      <div className='page-header'>
+        <div>
+          <h1>Alert Management</h1>
+          <p>Review, acknowledge and resolve watchlist alerts.</p>
+        </div>
+
+        <button
+          className='outline-button'
+          onClick={loadAlerts}
+          disabled={loading}
+        >
+          <RefreshCw size={14} />
+          Refresh
+        </button>
+      </div>
+
+      {error && <div className='error-banner'>{error}</div>}
+
+      <div className='alert-summary-grid'>
+        <div className='alert-summary-card'>
+          <div className='alert-summary-icon open'>
+            <AlertTriangle size={20} />
+          </div>
+          <div>
+            <span>Open Alerts</span>
+            <strong>{openAlerts.length}</strong>
+          </div>
+        </div>
+
+        <div className='alert-summary-card'>
+          <div className='alert-summary-icon acknowledged'>
+            <Check size={20} />
+          </div>
+          <div>
+            <span>Acknowledged</span>
+            <strong>{acknowledgedAlerts.length}</strong>
+          </div>
+        </div>
+
+        <div className='alert-summary-card'>
+          <div className='alert-summary-icon resolved'>
+            <CheckCircle2 size={20} />
+          </div>
+          <div>
+            <span>Resolved</span>
+            <strong>{resolvedAlerts.length}</strong>
+          </div>
+        </div>
+
+        <div className='alert-summary-card'>
+          <div className='alert-summary-icon total'>
+            <ShieldAlert size={20} />
+          </div>
+          <div>
+            <span>Total Alerts</span>
+            <strong>{alerts.length}</strong>
+          </div>
+        </div>
+      </div>
+
+      <section className='panel'>
+        <div className='panel-title'>
+          <div>
+            <h2>Alert History</h2>
+            <span>Watchlist matches generated by the detection pipeline</span>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className='empty-page'>
+            <Loader2 size={28} className='spin' />
+            <h3>Loading alerts...</h3>
+          </div>
+        ) : alerts.length === 0 ? (
+          <div className='empty-page'>
+            <ShieldAlert size={30} />
+            <h3>No alerts recorded</h3>
+            <span>New watchlist matches will appear here.</span>
+          </div>
+        ) : (
+          <div className='alert-table-wrap'>
+            <table className='data-table alert-table'>
+              <thead>
+                <tr>
+                  <th>Alert</th>
+                  <th>Camera</th>
+                  <th>Detection</th>
+                  <th>Confidence</th>
+                  <th>Severity</th>
+                  <th>Status</th>
+                  <th>Time</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {alerts.map((alert) => (
+                  <tr key={alert.id}>
+                    <td>
+                      <div className='alert-description'>
+                        <AlertTriangle size={16} />
+                        <div>
+                          <strong>
+                            {alert.description || 'Watchlist Match'}
+                          </strong>
+                          <span>Alert #{alert.id}</span>
+                        </div>
+                      </div>
+                    </td>
+
+                    <td>
+                      <span className='table-primary'>
+                        Camera #{alert.camera_id}
+                      </span>
+                    </td>
+
+                    <td>
+                      <span className='table-secondary'>
+                        Detection #{alert.detection_id}
+                      </span>
+                    </td>
+
+                    <td>
+                      <strong>
+                        {(alert.confidence * 100).toFixed(1)}%
+                      </strong>
+                    </td>
+
+                    <td>
+                      <span className={severityClass(alert.severity)}>
+                        {alert.severity}
+                      </span>
+                    </td>
+
+                    <td>
+                      <span className={statusClass(alert.status)}>
+                        {alert.status}
+                      </span>
+                    </td>
+
+                    <td>
+                      <div className='alert-time'>
+                        <Clock size={14} />
+                        {new Date(alert.timestamp).toLocaleString()}
+                      </div>
+                    </td>
+
+                    <td>
+                      <div className='alert-actions'>
+                        {alert.status === 'OPEN' && (
+                          <button
+                            className='small-button acknowledge'
+                            disabled={workingId === alert.id}
+                            onClick={() =>
+                              updateAlert(alert.id, 'acknowledge')
+                            }
+                          >
+                            {workingId === alert.id ? (
+                              <Loader2 size={13} className='spin' />
+                            ) : (
+                              <Check size={13} />
+                            )}
+                            Acknowledge
+                          </button>
+                        )}
+
+                        {alert.status === 'ACKNOWLEDGED' && (
+                          <button
+                            className='small-button resolve'
+                            disabled={workingId === alert.id}
+                            onClick={() =>
+                              updateAlert(alert.id, 'resolve')
+                            }
+                          >
+                            {workingId === alert.id ? (
+                              <Loader2 size={13} className='spin' />
+                            ) : (
+                              <CheckCircle2 size={13} />
+                            )}
+                            Resolve
+                          </button>
+                        )}
+
+                        {alert.status === 'RESOLVED' && (
+                          <span className='resolved-label'>
+                            <CheckCircle2 size={14} />
+                            Completed
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </MainLayout>
+  );
+}
